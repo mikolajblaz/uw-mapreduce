@@ -1,7 +1,10 @@
 import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.util.Arrays;
 import java.util.Random;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
@@ -11,22 +14,60 @@ import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.KeyValueTextInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.util.GenericOptionsParser;
+import org.apache.hadoop.util.Tool;
+import org.apache.hadoop.util.ToolRunner;
 
 
 /**
  * Created by mikib on 23.11.16.
  */
 
-public class TeraSort {
+public class TeraSort extends Configured implements Tool {
 
-    final static int numRange = 1000;
+    private final static int numRange = 1000;
+    private final static String samplesPath = "samples_output";
 
-    public static class IntMapper
+    private static float threshold;
+    private static Random r = new Random();
+
+    // Sampler
+    public static class SampleMapper extends Mapper<Text, Text, IntWritable, IntWritable>{
+        public void map(Text key, Text value, Context context) throws IOException, InterruptedException {
+            IntWritable k = new IntWritable(Integer.parseInt(key.toString()));
+            IntWritable v = new IntWritable(Integer.parseInt(value.toString()));
+
+            // Emit only sample
+            if (r.nextFloat() < threshold)
+                context.write(k, v);
+        }
+    }
+
+    public static class SampleReducer
+            extends Reducer<IntWritable, IntWritable, IntWritable, IntWritable> {
+        private IntWritable result = new IntWritable();
+
+        public void reduce(IntWritable key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
+            int sum = 0;
+            for (IntWritable val : values) {
+                sum += val.get();
+            }
+            result.set(sum);
+            context.write(key, result);
+        }
+    }
+
+    public static class SamplePartitioner extends Partitioner<IntWritable, IntWritable> {
+        @Override
+        public int getPartition(IntWritable key, IntWritable value, int numberOfPartitions) {
+            // send whole sample to one reducer
+            return 0;
+        }
+    }
+
+    // Sorter
+    public static class SortMapper
             extends Mapper<Text, Text, IntWritable, IntWritable>{
-
-        private final static IntWritable one = new IntWritable(1);
-        private final static IntWritable two = new IntWritable(2);
-        private final static Random r = new Random();
 
         public void map(Text key, Text value, Context context) throws IOException, InterruptedException {
             int intKey = Integer.parseInt(key.toString());
@@ -38,7 +79,7 @@ public class TeraSort {
         }
     }
 
-    public static class IntSumReducer
+    public static class SortReducer
             extends Reducer<IntWritable, IntWritable, IntWritable, IntWritable> {
         private IntWritable result = new IntWritable();
 
@@ -59,27 +100,58 @@ public class TeraSort {
         }
     }
 
+    @Override
+    public int run(String[] args) throws Exception {
+        Configuration conf = this.getConf();
+        // Job
+        Job sampleJob = Job.getInstance(conf, "TeraSort sampling");
+        sampleJob.setJarByClass(TeraSort.class);
+        // Map-Combine-Reduce
+        sampleJob.setMapperClass(SampleMapper.class);
+        sampleJob.setReducerClass(SampleReducer.class);
+        sampleJob.setNumReduceTasks(1); // only one reducer here!
+        sampleJob.setPartitionerClass(SamplePartitioner.class);
+        // Input
+        sampleJob.setInputFormatClass(KeyValueTextInputFormat.class);
+        KeyValueTextInputFormat.addInputPath(sampleJob, new Path(args[0]));
+        // Output
+        sampleJob.setOutputKeyClass(IntWritable.class);
+        sampleJob.setOutputValueClass(IntWritable.class);
+        FileOutputFormat.setOutputPath(sampleJob, new Path(samplesPath));
+
+        boolean status = sampleJob.waitForCompletion(true);
+        if (!status)
+            return 1;
+
+        // Job
+        Job sortJob = Job.getInstance(conf, "TeraSort sorting");
+        sortJob.setJarByClass(TeraSort.class);
+        // Map-Combine-Reduce
+        sortJob.setMapperClass(SortMapper.class);
+        sortJob.setReducerClass(SortReducer.class);
+        sortJob.setPartitionerClass(SortPartitioner.class);
+        // Input
+        sortJob.setInputFormatClass(KeyValueTextInputFormat.class);
+        KeyValueTextInputFormat.addInputPath(sortJob, new Path(samplesPath));
+        // Output
+        sortJob.setOutputKeyClass(IntWritable.class);
+        sortJob.setOutputValueClass(IntWritable.class);
+        FileOutputFormat.setOutputPath(sortJob, new Path(args[1]));
+        return sortJob.waitForCompletion(true) ? 0 : 1;
+    }
+
     public static void main(String[] args) throws Exception {
         Configuration conf = new Configuration();
-        conf.set("mapreduce.input.keyvaluelinerecordreader.key.value.separator",",");
-        // Job
-        Job job = Job.getInstance(conf, "TeraSort");
-        job.setJarByClass(TeraSort.class);
-        // Map-Combine-Reduce
-        job.setMapperClass(IntMapper.class);
-        job.setCombinerClass(IntSumReducer.class);
-        job.setReducerClass(IntSumReducer.class);
-        job.setNumReduceTasks(3);
-        job.setPartitionerClass(SortPartitioner.class);
-        // Input
-        job.setInputFormatClass(KeyValueTextInputFormat.class);
-        KeyValueTextInputFormat.addInputPath(job, new Path(args[0]));
-        // Output
-        job.setOutputKeyClass(IntWritable.class);
-        job.setOutputValueClass(IntWritable.class);
-        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+        GenericOptionsParser optionParser = new GenericOptionsParser(conf, args);
+        String[] remainingArgs = optionParser.getRemainingArgs();
 
-        boolean status = job.waitForCompletion(true);
-        System.exit(status ? 0 : 1);
+        if (remainingArgs.length != 3) {
+            System.err.println("Usage: TeraSort <InputDirectory> <OutputDirectory> <Threshold>");
+            System.exit(0);
+        }
+        threshold = Float.parseFloat(remainingArgs[2]);
+
+        int ret = ToolRunner.run(optionParser.getConfiguration(), new TeraSort(), remainingArgs);
+        System.exit(ret);
     }
 }
