@@ -7,6 +7,7 @@ import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.KeyValueTextInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
@@ -17,6 +18,9 @@ import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
  */
 
 public class TeraSort {
+
+    final static int numRange = 1000;
+
     public static class IntMapper
             extends Mapper<Text, Text, IntWritable, IntWritable>{
 
@@ -25,11 +29,12 @@ public class TeraSort {
         private final static Random r = new Random();
 
         public void map(Text key, Text value, Context context) throws IOException, InterruptedException {
-            IntWritable k = new IntWritable(Integer.parseInt(key.toString()));
-            IntWritable v = new IntWritable(Integer.parseInt(value.toString()));
+            int intKey = Integer.parseInt(key.toString());
+            int intValue = Integer.parseInt(value.toString());
+            IntWritable k = new IntWritable(intKey);
+            IntWritable v = new IntWritable(intValue);
 
-            IntWritable red = new IntWritable(r.nextInt(10));
-            context.write(red, v);
+            context.write(k, v);
         }
     }
 
@@ -47,6 +52,13 @@ public class TeraSort {
         }
     }
 
+    public static class SortPartitioner extends Partitioner<IntWritable, IntWritable> {
+        @Override
+        public int getPartition(IntWritable key, IntWritable value, int numberOfPartitions) {
+            return key.get() / (numRange / numberOfPartitions);
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         Configuration conf = new Configuration();
         conf.set("mapreduce.input.keyvaluelinerecordreader.key.value.separator",",");
@@ -58,6 +70,7 @@ public class TeraSort {
         job.setCombinerClass(IntSumReducer.class);
         job.setReducerClass(IntSumReducer.class);
         job.setNumReduceTasks(3);
+        job.setPartitionerClass(SortPartitioner.class);
         // Input
         job.setInputFormatClass(KeyValueTextInputFormat.class);
         KeyValueTextInputFormat.addInputPath(job, new Path(args[0]));
