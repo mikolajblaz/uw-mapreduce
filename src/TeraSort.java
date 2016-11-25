@@ -1,5 +1,6 @@
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.net.URI;
 import java.util.Arrays;
 import java.util.Random;
 
@@ -12,6 +13,7 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.lib.input.KeyValueTextInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.GenericOptionsParser;
@@ -33,6 +35,7 @@ public class TeraSort extends Configured implements Tool {
 
     // Sampler
     public static class SampleMapper extends Mapper<Text, Text, IntWritable, IntWritable>{
+        @Override
         public void map(Text key, Text value, Context context) throws IOException, InterruptedException {
             IntWritable k = new IntWritable(Integer.parseInt(key.toString()));
             IntWritable v = new IntWritable(Integer.parseInt(value.toString()));
@@ -43,10 +46,10 @@ public class TeraSort extends Configured implements Tool {
         }
     }
 
-    public static class SampleReducer
-            extends Reducer<IntWritable, IntWritable, IntWritable, IntWritable> {
+    public static class SampleReducer extends Reducer<IntWritable, IntWritable, IntWritable, IntWritable> {
         private IntWritable result = new IntWritable();
 
+        @Override
         public void reduce(IntWritable key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
             int sum = 0;
             for (IntWritable val : values) {
@@ -66,9 +69,23 @@ public class TeraSort extends Configured implements Tool {
     }
 
     // Sorter
-    public static class SortMapper
-            extends Mapper<Text, Text, IntWritable, IntWritable>{
+    public static class SortMapper extends Mapper<Text, Text, IntWritable, IntWritable>{
 
+        protected int[] borders;
+
+        @Override
+        protected void setup(Context context) throws IOException, InterruptedException {
+            Configuration conf = context.getConfiguration();
+            URI samplesURI = context.getCacheFiles()[0];
+            Path samplesPath = new Path(samplesURI.getPath());
+            countBorders(samplesPath);
+        }
+
+        protected void countBorders(Path samplesPath) {
+            borders = new int[10]; // TODO
+        }
+
+        @Override
         public void map(Text key, Text value, Context context) throws IOException, InterruptedException {
             int intKey = Integer.parseInt(key.toString());
             int intValue = Integer.parseInt(value.toString());
@@ -79,10 +96,10 @@ public class TeraSort extends Configured implements Tool {
         }
     }
 
-    public static class SortReducer
-            extends Reducer<IntWritable, IntWritable, IntWritable, IntWritable> {
+    public static class SortReducer extends Reducer<IntWritable, IntWritable, IntWritable, IntWritable> {
         private IntWritable result = new IntWritable();
 
+        @Override
         public void reduce(IntWritable key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
             int sum = 0;
             for (IntWritable val : values) {
@@ -132,7 +149,8 @@ public class TeraSort extends Configured implements Tool {
         sortJob.setPartitionerClass(SortPartitioner.class);
         // Input
         sortJob.setInputFormatClass(KeyValueTextInputFormat.class);
-        KeyValueTextInputFormat.addInputPath(sortJob, new Path(samplesPath));
+        KeyValueTextInputFormat.addInputPath(sortJob, new Path(args[0]));
+        sortJob.addCacheFile(new URI(samplesPath)); // TODO: add hdfs:// to uri
         // Output
         sortJob.setOutputKeyClass(IntWritable.class);
         sortJob.setOutputValueClass(IntWritable.class);
