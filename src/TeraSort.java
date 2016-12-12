@@ -1,7 +1,6 @@
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.RandomAccessFile;
 import java.net.URI;
 import java.util.*;
 
@@ -13,10 +12,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapreduce.Job;
-import org.apache.hadoop.mapreduce.Mapper;
-import org.apache.hadoop.mapreduce.Partitioner;
-import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.*;
 import org.apache.hadoop.mapreduce.lib.input.KeyValueTextInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.GenericOptionsParser;
@@ -34,6 +30,7 @@ public class TeraSort extends Configured implements Tool {
     private final static String samplesFile = "part-r-00000";
     private final static String sortedPath = "output_sorted/";
     private final static String rankedPath = "output_ranked/";
+    private final static String perfectPath = "output_perfect/";
 
     private static float threshold;
     private static Random r = new Random();
@@ -209,11 +206,82 @@ public class TeraSort extends Configured implements Tool {
         }
     }
 
+    /* ########################################## Perfect Sort ############################################## */
+    public static class PerfectMapper extends Mapper<Text, Text, IntWritable, TripleInt>{
+        protected IntWritable globalReducer = new IntWritable();
+        protected TripleInt globalValue = new TripleInt();
+
+        protected double m; // number of records on one balanced machine
+
+        @Override
+        protected void setup(Context context) throws IOException, InterruptedException {
+            // all records
+            int n = Integer.parseInt(context.getConfiguration().get("my.records"));
+            int reducersNum = context.getNumReduceTasks();
+            m = Math.ceil(n / (double) reducersNum);
+        }
+
+        @Override
+        protected void map(Text key, Text val, Context context) throws IOException, InterruptedException {
+            String[] indVal = val.toString().split("\t");
+            int rank = Integer.parseInt(key.toString());
+            int index = Integer.parseInt(indVal[0]);
+            int value = Integer.parseInt(indVal[1]);
+
+            int reducer = (int) Math.ceil((rank + 1) / m) - 1;
+            globalReducer.set(reducer);
+            globalValue.set(rank, index, value);
+            context.write(globalReducer, globalValue);
+        }
+    }
+
+    public static class PerfectReducer extends Reducer<IntWritable, TripleInt, IntWritable, TripleInt> {
+        // count reducers, for which current objects are remotely relevant
+        protected int[] remotelyRelevantReducers(int currReducer) {
+            // TODO: add remote reducers
+            return new int[]{currReducer};
+        }
+
+        @Override
+        protected void reduce(IntWritable key, Iterable<TripleInt> values, Context context) throws IOException, InterruptedException {
+            List<TripleInt> sortedValues = new ArrayList<>();
+            for (TripleInt val : values)
+                sortedValues.add(new TripleInt(val));
+            Collections.sort(sortedValues);
+
+            int reducersNum = context.getNumReduceTasks();
+            int currReducer = key.get();
+            int[] remoteReducers = remotelyRelevantReducers(currReducer);
+
+            IntWritable reducer = new IntWritable();
+            int prefixAggregate = 0;
+
+            // send all machine objects to self and at most 2 remotely relevant machines
+            for (TripleInt val : sortedValues) {
+                for (Integer red : remoteReducers) {
+                    reducer.set(red);
+                    context.write(reducer, val);
+                }
+
+                prefixAggregate += val.getThird();
+            }
+
+            // send aggregates to all machines
+            TripleInt globalValue = new TripleInt(- currReducer - 1, - currReducer - 1, prefixAggregate);
+            for (int red = 0; red < reducersNum; red++) {
+                reducer.set(red);
+                context.write(reducer, globalValue);
+            }
+            // TODO: remember about adding 1 to reducer number ^^^^^
+        }
+    }
+
 
     @Override
     public int run(String[] args) throws Exception {
         Configuration conf = this.getConf();
         int reducersNum = Integer.parseInt(conf.get("my.reducers"));
+        conf.set("mapred.reduce.tasks", Integer.toString(reducersNum)); // TODO: needed?
         /* ################# Samples ################## */
         Job sampleJob = Job.getInstance(conf, "TeraSort sampling");
         sampleJob.setJarByClass(TeraSort.class);
@@ -238,7 +306,6 @@ public class TeraSort extends Configured implements Tool {
         // Map-Combine-Reduce
         sortJob.setMapperClass(SortMapper.class);
         sortJob.setReducerClass(SortReducer.class);
-        sortJob.setNumReduceTasks(reducersNum);
         // Input
         sortJob.setInputFormatClass(KeyValueTextInputFormat.class);
         KeyValueTextInputFormat.addInputPath(sortJob, new Path(args[0]));
@@ -257,7 +324,6 @@ public class TeraSort extends Configured implements Tool {
         // Map-Combine-Reduce
         rankJob.setMapperClass(RankMapper.class);
         rankJob.setReducerClass(RankReducer.class);
-        rankJob.setNumReduceTasks(reducersNum); // TODO: needed?
         // Input
         rankJob.setInputFormatClass(KeyValueTextInputFormat.class);
         KeyValueTextInputFormat.addInputPath(rankJob, new Path(sortedPath));
@@ -267,6 +333,30 @@ public class TeraSort extends Configured implements Tool {
         FileOutputFormat.setOutputPath(rankJob, new Path(rankedPath));
 
         if (!rankJob.waitForCompletion(true))
+            return 1;
+
+        // get number of objects:
+        Counters counters = rankJob.getCounters();
+        Counter outputRecordsCounter = counters.findCounter("org.apache.hadoop.mapreduce.TaskCounter", "REDUCE_OUTPUT_RECORDS");
+        int recordsNum = (int) outputRecordsCounter.getValue();
+
+        /* ################# Perfect Sort ################## */
+        conf.set("my.records", Integer.toString(recordsNum));
+
+        Job perfectJob = Job.getInstance(conf, "TeraSort perfect sort");
+        perfectJob.setJarByClass(TeraSort.class);
+        // Map-Combine-Reduce
+        perfectJob.setMapperClass(PerfectMapper.class);
+        perfectJob.setReducerClass(PerfectReducer.class);
+        // Input
+        perfectJob.setInputFormatClass(KeyValueTextInputFormat.class);
+        KeyValueTextInputFormat.addInputPath(perfectJob, new Path(rankedPath));
+        // Output
+        perfectJob.setOutputKeyClass(IntWritable.class);
+        perfectJob.setOutputValueClass(TripleInt.class);
+        FileOutputFormat.setOutputPath(perfectJob, new Path(perfectPath));
+
+        if (!perfectJob.waitForCompletion(true))
             return 1;
 
         // final job:

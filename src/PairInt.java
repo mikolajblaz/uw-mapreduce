@@ -44,7 +44,7 @@ public class PairInt implements Writable, Comparable<PairInt> {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (!(o instanceof Pair)) return false;
+        if (!(o instanceof PairInt)) return false;
         PairInt pair = (PairInt) o;
         return (pair.first == this.first) && (pair.second == this.second);
     }
@@ -56,7 +56,7 @@ public class PairInt implements Writable, Comparable<PairInt> {
 
     @Override
     public int compareTo(PairInt pair) {
-        return first.compareTo(pair.second);
+        return first.compareTo(pair.first);
     }
 
     @Override
