@@ -79,10 +79,12 @@ public class TeraSort extends Configured implements Tool {
         }
     }
 
-    // Sorter
-    public static class SortMapper extends Mapper<Text, Text, IntWritable, IntWritable>{
+    /* ########################################## Sorter ############################################## */
+    public static class SortMapper extends Mapper<Text, Text, IntWritable, PairInt>{
 
         protected int[] borders;
+        protected IntWritable globalReducer = new IntWritable();
+        protected PairInt globalValue = new PairInt();
 
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
@@ -121,33 +123,58 @@ public class TeraSort extends Configured implements Tool {
             System.out.println(Arrays.toString(borders));
         }
 
+        protected int find_border(int index) {
+            int j = 1;
+            while (index > borders[j]) {
+                j++;
+            }
+            return j - 1;
+        }
+
         @Override
-        public void map(Text key, Text value, Context context) throws IOException, InterruptedException {
-            IntWritable k = new IntWritable(Integer.parseInt(key.toString()));
-            IntWritable v = new IntWritable(Integer.parseInt(value.toString()));
-            context.write(k, v);
+        public void map(Text index, Text value, Context context) throws IOException, InterruptedException {
+            int intIndex = Integer.parseInt(index.toString());
+            int intValue = Integer.parseInt(value.toString());
+
+            int reducer = find_border(intIndex);
+            globalReducer.set(reducer);
+            globalValue.setFirst(intIndex);
+            globalValue.setSecond(intValue);
+
+            context.write(globalReducer, globalValue);
         }
     }
 
-    public static class SortReducer extends Reducer<IntWritable, IntWritable, IntWritable, IntWritable> {
+    public static class SortReducer extends Reducer<IntWritable, PairInt, IntWritable, PairInt> {
         @Override
-        public void reduce(IntWritable key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
-            IntWritable value = values.iterator().next();
-            context.write(key, value);
+        public void reduce(IntWritable key, Iterable<PairInt> values, Context context) throws IOException, InterruptedException {
+            List<PairInt> sortedValues = new ArrayList<>();
+            for (PairInt val : values)
+                sortedValues.add(new PairInt(val));
+            Collections.sort(sortedValues);
+
+            for (PairInt v : sortedValues)
+                context.write(key, v);
+
+            int reducersNum = context.getNumReduceTasks();
+            int currReducer = key.get();
+
+            // Send machine count to all machines (in next MR phase)
+            PairInt allCount = new PairInt(-1, sortedValues.size());
+            IntWritable red = new IntWritable();
+            for (int reducer = currReducer + 1; reducer < reducersNum; reducer++) {
+                red.set(reducer);
+                context.write(red, allCount);
+            }
         }
     }
 
-    public static class SortPartitioner extends Partitioner<IntWritable, IntWritable> {
-        @Override
-        public int getPartition(IntWritable key, IntWritable value, int numberOfPartitions) {
-            return key.get() / (numRange / numberOfPartitions);
-        }
-    }
+    /* ########################################## Ranking ############################################## */
 
     @Override
     public int run(String[] args) throws Exception {
         Configuration conf = this.getConf();
-        // Job
+        /* ################# Samples ################## */
         Job sampleJob = Job.getInstance(conf, "TeraSort sampling");
         sampleJob.setJarByClass(TeraSort.class);
         // Map-Combine-Reduce
@@ -166,13 +193,12 @@ public class TeraSort extends Configured implements Tool {
         if (!status)
             return 1;
 
-        // Job
+        /* ################# Sorting ################## */
         Job sortJob = Job.getInstance(conf, "TeraSort sorting");
         sortJob.setJarByClass(TeraSort.class);
         // Map-Combine-Reduce
         sortJob.setMapperClass(SortMapper.class);
         sortJob.setReducerClass(SortReducer.class);
-        sortJob.setPartitionerClass(SortPartitioner.class);
         int reducersNum = Integer.parseInt(conf.get("my.reducers"));
         sortJob.setNumReduceTasks(reducersNum);
         // Input
@@ -181,7 +207,7 @@ public class TeraSort extends Configured implements Tool {
         sortJob.addCacheFile(new URI(samplesPath + samplesFile)); // TODO: add hdfs:// to uri
         // Output
         sortJob.setOutputKeyClass(IntWritable.class);
-        sortJob.setOutputValueClass(IntWritable.class);
+        sortJob.setOutputValueClass(PairInt.class);
         FileOutputFormat.setOutputPath(sortJob, new Path(args[1]));
         return sortJob.waitForCompletion(true) ? 0 : 1;
     }
