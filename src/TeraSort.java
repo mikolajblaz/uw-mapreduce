@@ -276,6 +276,41 @@ public class TeraSort extends Configured implements Tool {
         }
     }
 
+    /* ########################################## Sliding Aggregation ############################################## */
+    public static class AggrMapper extends Mapper<Text, Text, IntWritable, TripleInt>{
+        protected IntWritable globalReducer = new IntWritable();
+        protected TripleInt globalValue = new TripleInt();
+
+        protected double m; // number of records on one balanced machine
+
+        @Override
+        protected void setup(Context context) throws IOException, InterruptedException {
+            // all records
+            int n = Integer.parseInt(context.getConfiguration().get("my.records"));
+            int reducersNum = context.getNumReduceTasks();
+            m = Math.ceil(n / (double) reducersNum);
+        }
+
+        @Override
+        protected void map(Text key, Text val, Context context) throws IOException, InterruptedException {
+            String[] rankIndVal = val.toString().split("\t");
+            int rank = Integer.parseInt(rankIndVal[0]);
+            int index = Integer.parseInt(rankIndVal[1]);
+            int value = Integer.parseInt(rankIndVal[2]);
+
+            int reducer = Integer.parseInt(key.toString());
+            globalReducer.set(reducer);
+            globalValue.set(rank, index, value);
+            context.write(globalReducer, globalValue);
+        }
+    }
+
+    public static class AggrReducer extends Reducer<IntWritable, TripleInt, IntWritable, TripleInt> {
+        @Override
+        protected void reduce(IntWritable key, Iterable<TripleInt> values, Context context) throws IOException, InterruptedException {
+        }
+    }
+
 
     @Override
     public int run(String[] args) throws Exception {
@@ -357,6 +392,24 @@ public class TeraSort extends Configured implements Tool {
         FileOutputFormat.setOutputPath(perfectJob, new Path(perfectPath));
 
         if (!perfectJob.waitForCompletion(true))
+            return 1;
+
+
+        /* ################# Sliding Aggregation ################## */
+        Job aggrJob = Job.getInstance(conf, "Sliding Aggregation");
+        aggrJob.setJarByClass(TeraSort.class);
+        // Map-Combine-Reduce
+        aggrJob.setMapperClass(AggrMapper.class);
+        aggrJob.setReducerClass(AggrReducer.class);
+        // Input
+        aggrJob.setInputFormatClass(KeyValueTextInputFormat.class);
+        KeyValueTextInputFormat.addInputPath(aggrJob, new Path(perfectPath));
+        // Output
+        aggrJob.setOutputKeyClass(IntWritable.class);
+        aggrJob.setOutputValueClass(TripleInt.class);
+        FileOutputFormat.setOutputPath(aggrJob, new Path(args[1]));
+
+        if (!aggrJob.waitForCompletion(true))
             return 1;
 
         // final job:
