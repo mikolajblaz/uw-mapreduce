@@ -30,9 +30,10 @@ import org.apache.hadoop.util.ToolRunner;
 
 public class TeraSort extends Configured implements Tool {
 
-    private final static int numRange = 1000;
-    private final static String samplesPath = "samples_output/";
+    private final static String samplesPath = "output_samples/";
     private final static String samplesFile = "part-r-00000";
+    private final static String sortedPath = "output_sorted/";
+    private final static String rankedPath = "output_ranked/";
 
     private static float threshold;
     private static Random r = new Random();
@@ -138,9 +139,7 @@ public class TeraSort extends Configured implements Tool {
 
             int reducer = find_border(intIndex);
             globalReducer.set(reducer);
-            globalValue.setFirst(intIndex);
-            globalValue.setSecond(intValue);
-
+            globalValue.set(intIndex, intValue);
             context.write(globalReducer, globalValue);
         }
     }
@@ -170,10 +169,51 @@ public class TeraSort extends Configured implements Tool {
     }
 
     /* ########################################## Ranking ############################################## */
+    public static class RankMapper extends Mapper<Text, Text, IntWritable, PairInt>{
+        protected IntWritable globalReducer = new IntWritable();
+        protected PairInt globalValue = new PairInt();
+
+        @Override
+        protected void map(Text key, Text val, Context context) throws IOException, InterruptedException {
+            String[] indVal = val.toString().split("\t");
+            int index = Integer.parseInt(indVal[0]);
+            int value = Integer.parseInt(indVal[1]);
+
+            globalReducer.set(Integer.parseInt(key.toString()));
+            globalValue.set(index, value);
+            context.write(globalReducer, globalValue);
+        }
+    }
+
+    public static class RankReducer extends Reducer<IntWritable, PairInt, IntWritable, PairInt> {
+        @Override
+        protected void reduce(IntWritable key, Iterable<PairInt> values, Context context) throws IOException, InterruptedException {
+            List<PairInt> sortedValues = new ArrayList<>();
+            for (PairInt val : values)
+                sortedValues.add(new PairInt(val));
+            Collections.sort(sortedValues);
+
+            IntWritable rank = new IntWritable();
+
+            int prefixCount = 0;
+            for (PairInt val : sortedValues) {
+                if (val.getFirst() < 0) {   // count prefix from all preceding machines
+                    System.out.println(val);
+                    prefixCount += val.getSecond();
+                } else {
+                    rank.set(prefixCount);
+                    context.write(rank, val);
+                    prefixCount++;
+                }
+            }
+        }
+    }
+
 
     @Override
     public int run(String[] args) throws Exception {
         Configuration conf = this.getConf();
+        int reducersNum = Integer.parseInt(conf.get("my.reducers"));
         /* ################# Samples ################## */
         Job sampleJob = Job.getInstance(conf, "TeraSort sampling");
         sampleJob.setJarByClass(TeraSort.class);
@@ -189,8 +229,7 @@ public class TeraSort extends Configured implements Tool {
         sampleJob.setOutputValueClass(IntWritable.class);
         FileOutputFormat.setOutputPath(sampleJob, new Path(samplesPath));
 
-        boolean status = sampleJob.waitForCompletion(true);
-        if (!status)
+        if (!sampleJob.waitForCompletion(true))
             return 1;
 
         /* ################# Sorting ################## */
@@ -199,7 +238,6 @@ public class TeraSort extends Configured implements Tool {
         // Map-Combine-Reduce
         sortJob.setMapperClass(SortMapper.class);
         sortJob.setReducerClass(SortReducer.class);
-        int reducersNum = Integer.parseInt(conf.get("my.reducers"));
         sortJob.setNumReduceTasks(reducersNum);
         // Input
         sortJob.setInputFormatClass(KeyValueTextInputFormat.class);
@@ -208,8 +246,32 @@ public class TeraSort extends Configured implements Tool {
         // Output
         sortJob.setOutputKeyClass(IntWritable.class);
         sortJob.setOutputValueClass(PairInt.class);
-        FileOutputFormat.setOutputPath(sortJob, new Path(args[1]));
-        return sortJob.waitForCompletion(true) ? 0 : 1;
+        FileOutputFormat.setOutputPath(sortJob, new Path(sortedPath));
+
+        if (!sortJob.waitForCompletion(true))
+            return 1;
+
+        /* ################# Ranking ################## */
+        Job rankJob = Job.getInstance(conf, "TeraSort ranking");
+        rankJob.setJarByClass(TeraSort.class);
+        // Map-Combine-Reduce
+        rankJob.setMapperClass(RankMapper.class);
+        rankJob.setReducerClass(RankReducer.class);
+        rankJob.setNumReduceTasks(reducersNum); // TODO: needed?
+        // Input
+        rankJob.setInputFormatClass(KeyValueTextInputFormat.class);
+        KeyValueTextInputFormat.addInputPath(rankJob, new Path(sortedPath));
+        // Output
+        rankJob.setOutputKeyClass(IntWritable.class);
+        rankJob.setOutputValueClass(PairInt.class);
+        FileOutputFormat.setOutputPath(rankJob, new Path(rankedPath));
+
+        if (!rankJob.waitForCompletion(true))
+            return 1;
+
+        // final job:
+        // FileOutputFormat.setOutputPath(finalJob, new Path(args[1]));
+        return 0;
     }
 
     public static void main(String[] args) throws Exception {

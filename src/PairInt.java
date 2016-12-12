@@ -36,6 +36,11 @@ public class PairInt implements Writable, Comparable<PairInt> {
         this.second = second;
     }
 
+    public void set(Integer first, Integer second) {
+        this.first = first;
+        this.second = second;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
