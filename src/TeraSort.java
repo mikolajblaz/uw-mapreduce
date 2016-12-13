@@ -216,14 +216,14 @@ public class TeraSort extends Configured implements Tool {
         protected IntWritable globalReducer = new IntWritable();
         protected TripleInt globalValue = new TripleInt();
 
-        protected double m; // number of records on one balanced machine
+        protected int m; // number of records on one balanced machine
 
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
             // all records
             int n = Integer.parseInt(context.getConfiguration().get("my.records"));
             int reducersNum = context.getNumReduceTasks();
-            m = Math.ceil(n / (double) reducersNum);
+            m = (int) Math.ceil(n / (double) reducersNum);
         }
 
         @Override
@@ -233,7 +233,7 @@ public class TeraSort extends Configured implements Tool {
             int index = Integer.parseInt(indVal[0]);
             int value = Integer.parseInt(indVal[1]);
 
-            int reducer = (int) Math.ceil((rank + 1) / m) - 1;
+            int reducer = (int) Math.floor(rank / (double) m);
             globalReducer.set(reducer);
             globalValue.set(rank, index, value);
             context.write(globalReducer, globalValue);
@@ -300,6 +300,7 @@ public class TeraSort extends Configured implements Tool {
                     context.write(reducer, val);
                 }
 
+                // Aggregation point
                 prefixAggregate += val.getThird();
             }
 
@@ -346,18 +347,81 @@ public class TeraSort extends Configured implements Tool {
         private Map<Integer, TripleInt> objectsByRank = new TreeMap<>();
         private Map<Integer, Integer> machineAggregates = new TreeMap<>();
 
+        protected int n; // all records
         protected int m; // number of records on one balanced machine
         protected int l; // window size
         protected int reducersNum;
+
+        protected int countAggregate(int objectRank, int currReducer) {
+            System.out.print("Rank:     ");
+            System.out.println(objectRank);
+
+            int w1 = 0;
+            int w2 = 0;
+            int w3 = 0;
+
+            /* ######### w1 ######### */
+            // sum objects from machine M_alpha
+            int alpha = (int) Math.floor((objectRank - l + 1) / (double) m);
+            System.out.println("  Alpha:   " + Integer.toString(alpha));
+
+            if (alpha >= 0) {
+                int lowestAlphaRank = objectRank - l + 1;
+                // objectRank should be the minimum if (alpha == currReducer)
+                int highestAlphaRank = Math.min(Math.min((alpha + 1) * m, n), objectRank);
+
+                System.out.println("    Low:   " + Integer.toString(lowestAlphaRank));
+                System.out.println("    High:  " + Integer.toString(highestAlphaRank));
+
+                for (int rank = lowestAlphaRank; rank < highestAlphaRank; rank++) {
+                    // Aggregation point
+                    w1 += objectsByRank.get(rank).getThird();
+                }
+            } else {    // if alpha < 0, then objectRank < l
+                // set alpha to -1 to sum elements from 0
+                alpha = -1;
+            }
+            System.out.println("    Total: " + Integer.toString(w1));
+
+            /* ######### w2 ######### */
+            // sum objects from machines (alpha, currReducer)
+            for (int red = alpha + 1; red < currReducer; red++) {
+                // Aggregation point
+                w2 += machineAggregates.get(red);
+            }
+            System.out.println("  Interm: " + Integer.toString(w2));
+
+            /* ######### w3 ######### */
+            // sum objects from currReducer
+            int lowestCurrRank = m * currReducer;
+            int highestCurrRank = objectRank + 1;
+            System.out.println("  Curre:   " + Integer.toString(currReducer));
+            System.out.println("    Low:   " + Integer.toString(lowestCurrRank));
+            System.out.println("    High:  " + Integer.toString(highestCurrRank));
+            if (alpha < currReducer) {  // else w3 is 0
+                for (int rank = lowestCurrRank; rank < highestCurrRank; rank++) {
+                    // Aggregation point
+                    w3 += objectsByRank.get(rank).getThird();
+                }
+            }
+            System.out.println("    Total: " + Integer.toString(w3));
+
+            System.out.print("  Total:   ");
+            System.out.println(w1 + w2 + w3);
+            System.out.println("");
+            return w1 + w2 + w3;
+        }
 
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
             reducersNum = context.getNumReduceTasks();
             // all records
-            int n = Integer.parseInt(context.getConfiguration().get("my.records"));
+            n = Integer.parseInt(context.getConfiguration().get("my.records"));
             // window size
             l = Integer.parseInt(context.getConfiguration().get("my.window", "10"));
             m = (int) Math.ceil(n / (double) reducersNum);
+
+            System.out.println("REDUCER ON MACHINE [" + context.getTaskAttemptID().getTaskID().getId() + "] READY!");
         }
 
         @Override
@@ -377,9 +441,20 @@ public class TeraSort extends Configured implements Tool {
                 }
             }
 
-            // now we are ready for queries
-            for (TripleInt val : objectsByRank.values()) {
-                context.write(key, val);
+            // count which objects should the machine process
+            int lowestMachineRank = currReducer * m;
+            int highestMachineRank = Math.min((currReducer + 1) * m, n);
+
+            int aggregate, index;
+            for (int rank = lowestMachineRank; rank < highestMachineRank; rank++) {
+                aggregate = countAggregate(rank, currReducer);
+                index = objectsByRank.get(rank).getSecond();
+                context.write(key, new TripleInt(rank, index, aggregate));
+            }
+
+            context.write(key, new TripleInt(9999, 9999, 9999));
+            for (Map.Entry<Integer, Integer> keyVal : machineAggregates.entrySet()) {
+                context.write(key, new TripleInt(88888, keyVal.getKey(), keyVal.getValue()));
             }
         }
     }
@@ -388,6 +463,8 @@ public class TeraSort extends Configured implements Tool {
     @Override
     public int run(String[] args) throws Exception {
         Configuration conf = this.getConf();
+        conf.setIfUnset("my.reducers", "2");
+
         int reducersNum = Integer.parseInt(conf.get("my.reducers"));
         conf.set("mapred.reduce.tasks", Integer.toString(reducersNum)); // TODO: needed?
         /* ################# Samples ################## */
