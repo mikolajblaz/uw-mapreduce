@@ -343,9 +343,11 @@ public class TeraSort extends Configured implements Tool {
         }
     }
 
-    public static class AggrReducer extends Reducer<IntWritable, TripleInt, IntWritable, TripleInt> {
+    public static class AggrReducer extends Reducer<IntWritable, TripleInt, IntWritable, PairInt> {
         private Map<Integer, TripleInt> objectsByRank = new TreeMap<>();
         private Map<Integer, Integer> machineAggregates = new TreeMap<>();
+
+        protected IntWritable globalKey = new IntWritable();
 
         protected int n; // all records
         protected int m; // number of records on one balanced machine
@@ -447,14 +449,10 @@ public class TeraSort extends Configured implements Tool {
 
             int aggregate, index;
             for (int rank = lowestMachineRank; rank < highestMachineRank; rank++) {
+                globalKey.set(rank);
                 aggregate = countAggregate(rank, currReducer);
                 index = objectsByRank.get(rank).getSecond();
-                context.write(key, new TripleInt(rank, index, aggregate));
-            }
-
-            context.write(key, new TripleInt(9999, 9999, 9999));
-            for (Map.Entry<Integer, Integer> keyVal : machineAggregates.entrySet()) {
-                context.write(key, new TripleInt(88888, keyVal.getKey(), keyVal.getValue()));
+                context.write(globalKey, new PairInt(index, aggregate));
             }
         }
     }
@@ -556,7 +554,7 @@ public class TeraSort extends Configured implements Tool {
         KeyValueTextInputFormat.addInputPath(aggrJob, new Path(perfectPath));
         // Output
         aggrJob.setOutputKeyClass(IntWritable.class);
-        aggrJob.setOutputValueClass(TripleInt.class);
+        aggrJob.setOutputValueClass(TripleInt.class);   // TODO: error probably
         FileOutputFormat.setOutputPath(aggrJob, new Path(args[1]));
 
         if (!aggrJob.waitForCompletion(true))
