@@ -370,7 +370,7 @@ public class TeraSort extends Configured implements Tool {
             if (alpha >= 0) {
                 int lowestAlphaRank = objectRank - l + 1;
                 // objectRank should be the minimum if (alpha == currReducer)
-                int highestAlphaRank = Math.min(Math.min((alpha + 1) * m, n), objectRank);
+                int highestAlphaRank = Math.min(Math.min((alpha + 1) * m, n), objectRank + 1);
 
                 System.out.println("    Low:   " + Integer.toString(lowestAlphaRank));
                 System.out.println("    High:  " + Integer.toString(highestAlphaRank));
