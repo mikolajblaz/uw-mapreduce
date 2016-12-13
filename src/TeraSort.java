@@ -32,12 +32,18 @@ public class TeraSort extends Configured implements Tool {
     private final static String rankedPath = "output_ranked/";
     private final static String perfectPath = "output_perfect/";
 
-    private static float threshold;
     private static Random r = new Random();
 
     // Sampler
     public static class SampleMapper extends Mapper<Text, Text, IntWritable, IntWritable>{
         private final static IntWritable zero = new IntWritable(0);
+        private float threshold;
+
+        @Override
+        protected void setup(Context context) throws IOException, InterruptedException {
+            threshold = Float.parseFloat(context.getConfiguration().get("my.threshold", "0.5"));
+        }
+
         @Override
         public void map(Text key, Text value, Context context) throws IOException, InterruptedException {
             IntWritable k = new IntWritable(Integer.parseInt(key.toString()));
@@ -195,7 +201,6 @@ public class TeraSort extends Configured implements Tool {
             int prefixCount = 0;
             for (PairInt val : sortedValues) {
                 if (val.getFirst() < 0) {   // count prefix from all preceding machines
-                    System.out.println(val);
                     prefixCount += val.getSecond();
                 } else {
                     rank.set(prefixCount);
@@ -236,10 +241,42 @@ public class TeraSort extends Configured implements Tool {
     }
 
     public static class PerfectReducer extends Reducer<IntWritable, TripleInt, IntWritable, TripleInt> {
+        protected int m; // number of records on one balanced machine
+        protected int l; // window size
+        protected int reducersNum;
+
+        @Override
+        protected void setup(Context context) throws IOException, InterruptedException {
+            reducersNum = context.getNumReduceTasks();
+            // all records
+            int n = Integer.parseInt(context.getConfiguration().get("my.records"));
+            // window size
+            l = Integer.parseInt(context.getConfiguration().get("my.window", "10"));
+            m = (int) Math.ceil(n / (double) reducersNum);
+        }
+
         // count reducers, for which current objects are remotely relevant
-        protected int[] remotelyRelevantReducers(int currReducer) {
-            // TODO: add remote reducers
-            return new int[]{currReducer};
+        protected List<Integer> remotelyRelevantReducers(int currReducer) {
+            List<Integer> reducers = new LinkedList<>();
+            reducers.add(currReducer);
+
+            if (l <= m) {
+                reducers.add(currReducer + 1);
+            } else {
+                int remoteDistance = (int) Math.floor((l - 1) / (double) m);
+                reducers.add(currReducer + remoteDistance);
+                reducers.add(currReducer + remoteDistance + 1);
+            }
+
+            // remove reduces if id too big
+            Iterator<Integer> iter = reducers.iterator();
+            Integer red;
+            while (iter.hasNext()) {
+                red = iter.next();
+                if (red >= reducersNum)
+                    iter.remove();
+            }
+            return reducers;
         }
 
         @Override
@@ -251,7 +288,7 @@ public class TeraSort extends Configured implements Tool {
 
             int reducersNum = context.getNumReduceTasks();
             int currReducer = key.get();
-            int[] remoteReducers = remotelyRelevantReducers(currReducer);
+            List<Integer> remoteReducers = remotelyRelevantReducers(currReducer);
 
             IntWritable reducer = new IntWritable();
             int prefixAggregate = 0;
@@ -306,8 +343,44 @@ public class TeraSort extends Configured implements Tool {
     }
 
     public static class AggrReducer extends Reducer<IntWritable, TripleInt, IntWritable, TripleInt> {
+        private Map<Integer, TripleInt> objectsByRank = new TreeMap<>();
+        private Map<Integer, Integer> machineAggregates = new TreeMap<>();
+
+        protected int m; // number of records on one balanced machine
+        protected int l; // window size
+        protected int reducersNum;
+
+        @Override
+        protected void setup(Context context) throws IOException, InterruptedException {
+            reducersNum = context.getNumReduceTasks();
+            // all records
+            int n = Integer.parseInt(context.getConfiguration().get("my.records"));
+            // window size
+            l = Integer.parseInt(context.getConfiguration().get("my.window", "10"));
+            m = (int) Math.ceil(n / (double) reducersNum);
+        }
+
         @Override
         protected void reduce(IntWritable key, Iterable<TripleInt> values, Context context) throws IOException, InterruptedException {
+            List<TripleInt> sortedValues = new ArrayList<>();
+            for (TripleInt val : values)
+                sortedValues.add(new TripleInt(val));
+            Collections.sort(sortedValues);
+
+            int currReducer = key.get();
+
+            for (TripleInt val : sortedValues) {
+                if (val.getFirst() < 0) {
+                    machineAggregates.put(- val.getFirst() - 1, val.getThird());
+                } else {
+                    objectsByRank.put(val.getFirst(), val);
+                }
+            }
+
+            // now we are ready for queries
+            for (TripleInt val : objectsByRank.values()) {
+                context.write(key, val);
+            }
         }
     }
 
@@ -422,12 +495,15 @@ public class TeraSort extends Configured implements Tool {
         GenericOptionsParser optionParser = new GenericOptionsParser(conf, args);
         String[] remainingArgs = optionParser.getRemainingArgs();
 
-        if (remainingArgs.length != 3) {
-            System.err.println("Usage: TeraSort <InputDirectory> <OutputDirectory> <Threshold>");
+        if (remainingArgs.length != 2) {
+            System.err.println("Usage: TeraSort <InputDirectory> <OutputDirectory>");
+            System.err.println("Optional parameters:");
+            System.err.println("-D my.reducers=4");
+            System.err.println("-D my.window=50");
+            System.err.println("-D my.threshold=0.5");
+
             System.exit(0);
         }
-        threshold = Float.parseFloat(remainingArgs[2]);
-
         int ret = ToolRunner.run(optionParser.getConfiguration(), new TeraSort(), remainingArgs);
         System.exit(ret);
     }
