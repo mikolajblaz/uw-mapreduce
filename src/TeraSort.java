@@ -156,7 +156,7 @@ public class TeraSort extends Configured implements Tool {
             for (PairInt v : sortedValues)
                 context.write(key, v);
 
-            int reducersNum = context.getNumReduceTasks();
+            int reducersNum = Integer.parseInt(context.getConfiguration().get("my.reducers"));
             int currReducer = key.get();
 
             // Send machine count to all machines (in next MR phase)
@@ -220,7 +220,7 @@ public class TeraSort extends Configured implements Tool {
         protected void setup(Context context) throws IOException, InterruptedException {
             // all records
             int n = Integer.parseInt(context.getConfiguration().get("my.records"));
-            int reducersNum = context.getNumReduceTasks();
+            int reducersNum = Integer.parseInt(context.getConfiguration().get("my.reducers"));
             m = (int) Math.ceil(n / (double) reducersNum);
         }
 
@@ -245,7 +245,7 @@ public class TeraSort extends Configured implements Tool {
 
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
-            reducersNum = context.getNumReduceTasks();
+            reducersNum = Integer.parseInt(context.getConfiguration().get("my.reducers"));
             // all records
             int n = Integer.parseInt(context.getConfiguration().get("my.records"));
             // window size
@@ -284,7 +284,7 @@ public class TeraSort extends Configured implements Tool {
                 sortedValues.add(new TripleInt(val));
             Collections.sort(sortedValues);
 
-            int reducersNum = context.getNumReduceTasks();
+            int reducersNum = Integer.parseInt(context.getConfiguration().get("my.reducers"));
             int currReducer = key.get();
             List<Integer> remoteReducers = remotelyRelevantReducers(currReducer);
 
@@ -323,7 +323,7 @@ public class TeraSort extends Configured implements Tool {
         protected void setup(Context context) throws IOException, InterruptedException {
             // all records
             int n = Integer.parseInt(context.getConfiguration().get("my.records"));
-            int reducersNum = context.getNumReduceTasks();
+            int reducersNum = Integer.parseInt(context.getConfiguration().get("my.reducers"));
             m = Math.ceil(n / (double) reducersNum);
         }
 
@@ -378,7 +378,7 @@ public class TeraSort extends Configured implements Tool {
 
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
-            reducersNum = context.getNumReduceTasks();
+            reducersNum = Integer.parseInt(context.getConfiguration().get("my.reducers"));
             // all records
             n = Integer.parseInt(context.getConfiguration().get("my.records"));
             // window size
@@ -394,6 +394,9 @@ public class TeraSort extends Configured implements Tool {
             Collections.sort(sortedValues);
 
             int currReducer = key.get();
+
+            machineAggregates.clear();
+            prefixAggregates.clear();
 
             int prefixAggregate = 0;
             for (TripleInt val : sortedValues) {
@@ -430,10 +433,8 @@ public class TeraSort extends Configured implements Tool {
     @Override
     public int run(String[] args) throws Exception {
         Configuration conf = this.getConf();
-        conf.setIfUnset("my.reducers", "2");
+        conf.setIfUnset("my.reducers", "4");
 
-        int reducersNum = Integer.parseInt(conf.get("my.reducers"));
-        conf.set("mapred.reduce.tasks", Integer.toString(reducersNum)); // TODO: needed?
         /* ################# Samples ################## */
         Job sampleJob = Job.getInstance(conf, "TeraSort sampling");
         sampleJob.setJarByClass(TeraSort.class);
@@ -461,7 +462,7 @@ public class TeraSort extends Configured implements Tool {
         // Input
         sortJob.setInputFormatClass(KeyValueTextInputFormat.class);
         KeyValueTextInputFormat.addInputPath(sortJob, new Path(args[0]));
-        sortJob.addCacheFile(new URI(samplesPath + samplesFile)); // TODO: add hdfs:// to uri
+        sortJob.addCacheFile(new URI(samplesPath + samplesFile));
         // Output
         sortJob.setOutputKeyClass(IntWritable.class);
         sortJob.setOutputValueClass(PairInt.class);
@@ -523,7 +524,7 @@ public class TeraSort extends Configured implements Tool {
         KeyValueTextInputFormat.addInputPath(aggrJob, new Path(perfectPath));
         // Output
         aggrJob.setOutputKeyClass(IntWritable.class);
-        aggrJob.setOutputValueClass(TripleInt.class);   // TODO: error probably
+        aggrJob.setOutputValueClass(TripleInt.class);
         FileOutputFormat.setOutputPath(aggrJob, new Path(args[1]));
 
         if (!aggrJob.waitForCompletion(true))
