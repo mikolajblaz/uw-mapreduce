@@ -346,6 +346,8 @@ public class TeraSort extends Configured implements Tool {
     public static class AggrReducer extends Reducer<IntWritable, TripleInt, IntWritable, PairInt> {
         private Map<Integer, TripleInt> objectsByRank = new TreeMap<>();
         private Map<Integer, Integer> machineAggregates = new TreeMap<>();
+        // prefix sum of elements with lower rank on the machine
+        private Map<Integer, Integer> prefixAggregates = new TreeMap<>();
 
         protected IntWritable globalKey = new IntWritable();
 
@@ -358,60 +360,32 @@ public class TeraSort extends Configured implements Tool {
             System.out.print("Rank:     ");
             System.out.println(objectRank);
 
-            int w1 = 0;
-            int w2 = 0;
-            int w3 = 0;
+            int lowWindowObject = objectRank - l + 1;
 
-            /* ######### w1 ######### */
-            // sum objects from machine M_alpha
-            int alpha = (int) Math.floor((objectRank - l + 1) / (double) m);
-            System.out.println("  Alpha:   " + Integer.toString(alpha));
-
-            if (alpha >= 0) {
-                int lowestAlphaRank = objectRank - l + 1;
-                // objectRank should be the minimum if (alpha == currReducer)
-                int highestAlphaRank = Math.min(Math.min((alpha + 1) * m, n), objectRank + 1);
-
-                System.out.println("    Low:   " + Integer.toString(lowestAlphaRank));
-                System.out.println("    High:  " + Integer.toString(highestAlphaRank));
-
-                for (int rank = lowestAlphaRank; rank < highestAlphaRank; rank++) {
-                    // Aggregation point
-                    w1 += objectsByRank.get(rank).getThird();
-                }
-            } else {    // if alpha < 0, then objectRank < l
-                // set alpha to -1 to sum elements from 0
-                alpha = -1;
-            }
-            System.out.println("    Total: " + Integer.toString(w1));
+            /* ######### w1 + w3 ######### */
+            // Aggregation point
+            int highSum = prefixAggregates.get(objectRank + 1);
+            int lowSum = lowWindowObject < 0 ? 0 : prefixAggregates.get(objectRank - l + 1);
+            int objectsSum = highSum - lowSum;
+//            int objectsSum = prefixAggregates.get(objectRank + 1) - prefixAggregates.get(objectRank - l + 1);
+            System.out.println("  Objects: " + Integer.toString(objectsSum));
 
             /* ######### w2 ######### */
             // sum objects from machines (alpha, currReducer)
+            int interSum = 0;
+            int alpha = (int) Math.floor(lowWindowObject / (double) m);
+            if (alpha < 0)
+                alpha = -1;
             for (int red = alpha + 1; red < currReducer; red++) {
                 // Aggregation point
-                w2 += machineAggregates.get(red);
+                if (!prefixAggregates.containsKey(red * m))
+                    interSum += machineAggregates.get(red);
             }
-            System.out.println("  Interm: " + Integer.toString(w2));
-
-            /* ######### w3 ######### */
-            // sum objects from currReducer
-            int lowestCurrRank = m * currReducer;
-            int highestCurrRank = objectRank + 1;
-            System.out.println("  Curre:   " + Integer.toString(currReducer));
-            System.out.println("    Low:   " + Integer.toString(lowestCurrRank));
-            System.out.println("    High:  " + Integer.toString(highestCurrRank));
-            if (alpha < currReducer) {  // else w3 is 0
-                for (int rank = lowestCurrRank; rank < highestCurrRank; rank++) {
-                    // Aggregation point
-                    w3 += objectsByRank.get(rank).getThird();
-                }
-            }
-            System.out.println("    Total: " + Integer.toString(w3));
-
+            System.out.println("  Interm:  " + Integer.toString(interSum));
             System.out.print("  Total:   ");
-            System.out.println(w1 + w2 + w3);
+            System.out.println(objectsSum + interSum);
             System.out.println("");
-            return w1 + w2 + w3;
+            return objectsSum + interSum;
         }
 
         @Override
@@ -435,10 +409,15 @@ public class TeraSort extends Configured implements Tool {
 
             int currReducer = key.get();
 
+            int prefixAggregate = 0;
             for (TripleInt val : sortedValues) {
                 if (val.getFirst() < 0) {
                     machineAggregates.put(- val.getFirst() - 1, val.getThird());
                 } else {
+                    System.out.println("PUT: " + Integer.toString(val.getFirst()));
+                    prefixAggregates.put(val.getFirst(), prefixAggregate);
+                    // Aggregation point
+                    prefixAggregate += val.getThird();
                     objectsByRank.put(val.getFirst(), val);
                 }
             }
@@ -447,12 +426,20 @@ public class TeraSort extends Configured implements Tool {
             int lowestMachineRank = currReducer * m;
             int highestMachineRank = Math.min((currReducer + 1) * m, n);
 
-            int aggregate, index;
-            for (int rank = lowestMachineRank; rank < highestMachineRank; rank++) {
-                globalKey.set(rank);
-                aggregate = countAggregate(rank, currReducer);
-                index = objectsByRank.get(rank).getSecond();
-                context.write(globalKey, new PairInt(index, aggregate));
+            // insert last value (the guard)
+            System.out.println("PUT: " + Integer.toString(highestMachineRank));
+            prefixAggregates.put(highestMachineRank, prefixAggregate);
+
+            int aggregate, index, rank;
+            for (TripleInt val : sortedValues) {
+                rank = val.getFirst();
+                if (rank >= lowestMachineRank) {  // else ignore
+                    globalKey.set(rank);
+                    System.out.println("RANK: " + Integer.toString(rank));
+                    aggregate = countAggregate(rank, currReducer);
+                    index = val.getSecond();
+                    context.write(globalKey, new PairInt(index, aggregate));
+                }
             }
         }
     }
