@@ -24,7 +24,7 @@ import org.apache.hadoop.util.ToolRunner;
  * Created by mikib on 23.11.16.
  */
 
-public class TeraSort extends Configured implements Tool {
+public class SlidingAggregation extends Configured implements Tool {
 
     private final static String samplesPath = "output_samples/";
     private final static String samplesFile = "part-r-00000";
@@ -436,8 +436,8 @@ public class TeraSort extends Configured implements Tool {
         conf.setIfUnset("my.reducers", "4");
 
         /* ################# Samples ################## */
-        Job sampleJob = Job.getInstance(conf, "TeraSort sampling");
-        sampleJob.setJarByClass(TeraSort.class);
+        Job sampleJob = Job.getInstance(conf, "SlidingAggregation sampling");
+        sampleJob.setJarByClass(SlidingAggregation.class);
         // Map-Combine-Reduce
         sampleJob.setMapperClass(SampleMapper.class);
         sampleJob.setReducerClass(SampleReducer.class);
@@ -454,8 +454,8 @@ public class TeraSort extends Configured implements Tool {
             return 1;
 
         /* ################# Sorting ################## */
-        Job sortJob = Job.getInstance(conf, "TeraSort sorting");
-        sortJob.setJarByClass(TeraSort.class);
+        Job sortJob = Job.getInstance(conf, "SlidingAggregation sorting");
+        sortJob.setJarByClass(SlidingAggregation.class);
         // Map-Combine-Reduce
         sortJob.setMapperClass(SortMapper.class);
         sortJob.setReducerClass(SortReducer.class);
@@ -472,8 +472,8 @@ public class TeraSort extends Configured implements Tool {
             return 1;
 
         /* ################# Ranking ################## */
-        Job rankJob = Job.getInstance(conf, "TeraSort ranking");
-        rankJob.setJarByClass(TeraSort.class);
+        Job rankJob = Job.getInstance(conf, "SlidingAggregation ranking");
+        rankJob.setJarByClass(SlidingAggregation.class);
         // Map-Combine-Reduce
         rankJob.setMapperClass(RankMapper.class);
         rankJob.setReducerClass(RankReducer.class);
@@ -496,8 +496,8 @@ public class TeraSort extends Configured implements Tool {
         /* ################# Perfect Sort ################## */
         conf.set("my.records", Integer.toString(recordsNum));
 
-        Job perfectJob = Job.getInstance(conf, "TeraSort perfect sort");
-        perfectJob.setJarByClass(TeraSort.class);
+        Job perfectJob = Job.getInstance(conf, "SlidingAggregation perfect sort");
+        perfectJob.setJarByClass(SlidingAggregation.class);
         // Map-Combine-Reduce
         perfectJob.setMapperClass(PerfectMapper.class);
         perfectJob.setReducerClass(PerfectReducer.class);
@@ -515,7 +515,7 @@ public class TeraSort extends Configured implements Tool {
 
         /* ################# Sliding Aggregation ################## */
         Job aggrJob = Job.getInstance(conf, "Sliding Aggregation");
-        aggrJob.setJarByClass(TeraSort.class);
+        aggrJob.setJarByClass(SlidingAggregation.class);
         // Map-Combine-Reduce
         aggrJob.setMapperClass(AggrMapper.class);
         aggrJob.setReducerClass(AggrReducer.class);
@@ -541,7 +541,7 @@ public class TeraSort extends Configured implements Tool {
         String[] remainingArgs = optionParser.getRemainingArgs();
 
         if (remainingArgs.length != 2) {
-            System.err.println("Usage: TeraSort <InputDirectory> <OutputDirectory>");
+            System.err.println("Usage: SlidingAggregation <InputDirectory> <OutputDirectory>");
             System.err.println("Optional parameters (with example values):");
             System.err.println("-D my.reducers=4");
             System.err.println("-D my.window=50");
@@ -549,7 +549,7 @@ public class TeraSort extends Configured implements Tool {
 
             System.exit(0);
         }
-        int ret = ToolRunner.run(optionParser.getConfiguration(), new TeraSort(), remainingArgs);
+        int ret = ToolRunner.run(optionParser.getConfiguration(), new SlidingAggregation(), remainingArgs);
         System.exit(ret);
     }
 }
