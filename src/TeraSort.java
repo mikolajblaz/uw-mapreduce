@@ -123,8 +123,6 @@ public class TeraSort extends Configured implements Tool {
             } finally {
                 IOUtils.closeStream(input);
             }
-            System.out.println("################ BORDERS ########################");
-            System.out.println(Arrays.toString(borders));
         }
 
         protected int find_border(int index) {
@@ -344,7 +342,6 @@ public class TeraSort extends Configured implements Tool {
     }
 
     public static class AggrReducer extends Reducer<IntWritable, TripleInt, IntWritable, PairInt> {
-        private Map<Integer, TripleInt> objectsByRank = new TreeMap<>();
         private Map<Integer, Integer> machineAggregates = new TreeMap<>();
         // prefix sum of elements with lower rank on the machine
         private Map<Integer, Integer> prefixAggregates = new TreeMap<>();
@@ -357,9 +354,6 @@ public class TeraSort extends Configured implements Tool {
         protected int reducersNum;
 
         protected int countAggregate(int objectRank, int currReducer) {
-            System.out.print("Rank:     ");
-            System.out.println(objectRank);
-
             int lowWindowObject = objectRank - l + 1;
 
             /* ######### w1 + w3 ######### */
@@ -367,8 +361,6 @@ public class TeraSort extends Configured implements Tool {
             int highSum = prefixAggregates.get(objectRank + 1);
             int lowSum = lowWindowObject < 0 ? 0 : prefixAggregates.get(objectRank - l + 1);
             int objectsSum = highSum - lowSum;
-//            int objectsSum = prefixAggregates.get(objectRank + 1) - prefixAggregates.get(objectRank - l + 1);
-            System.out.println("  Objects: " + Integer.toString(objectsSum));
 
             /* ######### w2 ######### */
             // sum objects from machines (alpha, currReducer)
@@ -381,10 +373,6 @@ public class TeraSort extends Configured implements Tool {
                 if (!prefixAggregates.containsKey(red * m))
                     interSum += machineAggregates.get(red);
             }
-            System.out.println("  Interm:  " + Integer.toString(interSum));
-            System.out.print("  Total:   ");
-            System.out.println(objectsSum + interSum);
-            System.out.println("");
             return objectsSum + interSum;
         }
 
@@ -396,8 +384,6 @@ public class TeraSort extends Configured implements Tool {
             // window size
             l = Integer.parseInt(context.getConfiguration().get("my.window", "10"));
             m = (int) Math.ceil(n / (double) reducersNum);
-
-            System.out.println("REDUCER ON MACHINE [" + context.getTaskAttemptID().getTaskID().getId() + "] READY!");
         }
 
         @Override
@@ -414,11 +400,9 @@ public class TeraSort extends Configured implements Tool {
                 if (val.getFirst() < 0) {
                     machineAggregates.put(- val.getFirst() - 1, val.getThird());
                 } else {
-                    System.out.println("PUT: " + Integer.toString(val.getFirst()));
                     prefixAggregates.put(val.getFirst(), prefixAggregate);
                     // Aggregation point
                     prefixAggregate += val.getThird();
-                    objectsByRank.put(val.getFirst(), val);
                 }
             }
 
@@ -427,7 +411,6 @@ public class TeraSort extends Configured implements Tool {
             int highestMachineRank = Math.min((currReducer + 1) * m, n);
 
             // insert last value (the guard)
-            System.out.println("PUT: " + Integer.toString(highestMachineRank));
             prefixAggregates.put(highestMachineRank, prefixAggregate);
 
             int aggregate, index, rank;
@@ -435,7 +418,6 @@ public class TeraSort extends Configured implements Tool {
                 rank = val.getFirst();
                 if (rank >= lowestMachineRank) {  // else ignore
                     globalKey.set(rank);
-                    System.out.println("RANK: " + Integer.toString(rank));
                     aggregate = countAggregate(rank, currReducer);
                     index = val.getSecond();
                     context.write(globalKey, new PairInt(index, aggregate));
@@ -559,7 +541,7 @@ public class TeraSort extends Configured implements Tool {
 
         if (remainingArgs.length != 2) {
             System.err.println("Usage: TeraSort <InputDirectory> <OutputDirectory>");
-            System.err.println("Optional parameters:");
+            System.err.println("Optional parameters (with example values):");
             System.err.println("-D my.reducers=4");
             System.err.println("-D my.window=50");
             System.err.println("-D my.threshold=0.5");
